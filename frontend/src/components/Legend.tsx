@@ -4,6 +4,16 @@ interface Props {
 }
 
 const LEGENDS: Record<string, { label: string; color: string }[]> = {
+  bt: [
+    { label: "<220", color: "#ffffff" },
+    { label: "220-240", color: "#ffffcc" },
+    { label: "240-260", color: "#ffcc00" },
+    { label: "260-280", color: "#ff8800" },
+    { label: "280-300", color: "#ff4400" },
+    { label: "300-320", color: "#cc0000" },
+    { label: "320-340", color: "#660000" },
+    { label: ">340", color: "#000000" },
+  ],
   t2m: [
     { label: "<22", color: "#0000ff" },
     { label: "22-24", color: "#0088ff" },

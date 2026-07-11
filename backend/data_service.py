@@ -7,6 +7,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 ERA5_DIR = ROOT / "data" / "era5"
 GFS_DIR = ROOT / "data" / "gfs"
+HIMAWARI_DIR = ROOT / "data" / "himawari9"
 
 TRANSFORMS = {
     "t2m": lambda v: round(v - 273.15, 1),
@@ -20,17 +21,20 @@ TRANSFORMS = {
 
 UNITS = {
     "t2m": "°C", "d2m": "°C", "u10": "m/s", "v10": "m/s",
-    "sp": "hPa", "msl": "hPa", "tp": "m",
+    "sp": "hPa", "msl": "hPa", "tp": "m", "bt": "K",
 }
 
 VARIABLE_LABELS = {
     "t2m": "Temperature (2m)", "d2m": "Dewpoint (2m)",
     "u10": "U Wind (10m)", "v10": "V Wind (10m)",
     "sp": "Surface Pressure", "msl": "MSL Pressure",
-    "tp": "Precipitation",
+    "tp": "Precipitation", "bt": "BT Band 13",
 }
 
 ALL_VARIABLES = list(TRANSFORMS.keys())
+
+# Downsample himawari: keep 1 out of every N rows to stay fast
+HIMAWARI_DOWNSAMPLE = 5
 
 
 def _find_gfs_latest() -> Path | None:
@@ -62,6 +66,14 @@ def get_sources() -> list[dict]:
             "name": "GFS Forecast",
             "description": f"Latest cycle ({gfs_dir.parent.name}/{gfs_dir.name}) · 3-6h lead · 0.25°",
             "variables": ALL_VARIABLES,
+        })
+
+    if HIMAWARI_DIR.exists():
+        sources.append({
+            "id": "himawari9",
+            "name": "Himawari-9 IR",
+            "description": "Band 13 (10.4µm) · 2km · every 10 min",
+            "variables": ["bt"],
         })
 
     return sources
@@ -106,16 +118,57 @@ def _load_gfs(var: str) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def _find_himawari_timestamps() -> list[str]:
+    if not HIMAWARI_DIR.exists():
+        return []
+    ts_list = []
+    for year in sorted(HIMAWARI_DIR.iterdir()):
+        if not year.is_dir():
+            continue
+        for month in sorted(year.iterdir()):
+            if not month.is_dir():
+                continue
+            for day in sorted(month.iterdir()):
+                if not day.is_dir():
+                    continue
+                for time_dir in sorted(day.iterdir()):
+                    if not time_dir.is_dir():
+                        continue
+                    if list(time_dir.glob("*.parquet")):
+                        t = time_dir.name
+                        ts_list.append(f"{year.name}-{month.name}-{day.name} {t[:2]}:{t[2:]}:00")
+    return ts_list
+
+
+def _load_himawari(ts: str) -> pd.DataFrame:
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):\d{2}", ts)
+    if not m:
+        return pd.DataFrame()
+    path = HIMAWARI_DIR / m.group(1) / m.group(2) / m.group(3) / f"{m.group(4)}{m.group(5)}" / "bt.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    df["v"] = df["bt_k"].round(1)
+    df["ts"] = ts
+    if len(df) > 10000:
+        df = df.iloc[::HIMAWARI_DOWNSAMPLE].reset_index(drop=True)
+    return df[["lat", "lon", "v", "ts"]]
+
+
 @lru_cache(maxsize=32)
 def _cached_load(source: str, var: str) -> pd.DataFrame:
     if source == "era5":
         return _load_era5(var)
     elif source == "gfs":
         return _load_gfs(var)
+    elif source == "himawari9":
+        return _load_himawari(var)
     return pd.DataFrame()
 
 
 def get_timestamps(source: str, var: str) -> list[str]:
+    if source == "himawari9":
+        return _find_himawari_timestamps()
     df = _cached_load(source, var)
     if df.empty:
         return []
@@ -123,16 +176,32 @@ def get_timestamps(source: str, var: str) -> list[str]:
 
 
 def get_frame(source: str, var: str, ts: str) -> list[dict]:
-    df = _cached_load(source, var)
+    if source == "himawari9":
+        df = _load_himawari(ts)
+    else:
+        df = _cached_load(source, var)
     if df.empty:
         return []
-    row = df[df["ts"] == ts]
+    if source != "himawari9":
+        row = df[df["ts"] == ts]
+    else:
+        row = df
     if row.empty:
         return []
     return row[["lat", "lon", "v"]].to_dict(orient="records")
 
 
 def get_point_series(source: str, var: str, lat: float, lon: float) -> list[dict]:
+    if source == "himawari9":
+        timestamps = _find_himawari_timestamps()
+        result = []
+        for ts in timestamps:
+            df = _load_himawari(ts)
+            row = df[(df["lat"].round(4) == round(lat, 4)) & (df["lon"].round(4) == round(lon, 4))]
+            if not row.empty:
+                result.append({"ts": ts, "v": row.iloc[0]["v"]})
+        return result
+
     df = _cached_load(source, var)
     if df.empty:
         return []

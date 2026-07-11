@@ -5,6 +5,8 @@ import type { GridPoint } from "../types";
 import type { SelectedPoint } from "../App";
 
 function getColor(val: number, varKey: string): string {
+  if (varKey === "bt")
+    return val < 220 ? "#ffffff" : val < 240 ? "#ffffcc" : val < 260 ? "#ffcc00" : val < 280 ? "#ff8800" : val < 300 ? "#ff4400" : val < 320 ? "#cc0000" : val < 340 ? "#660000" : "#000000";
   if (varKey === "t2m")
     return val < 22 ? "#0000ff" : val < 24 ? "#0088ff" : val < 26 ? "#00ccff" : val < 28 ? "#00ff88" : val < 30 ? "#88ff00" : val < 32 ? "#ffcc00" : "#ff3300";
   if (varKey === "d2m")
