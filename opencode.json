@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [".opencode/AGENTS.md"],
+  "agent": {
+    "data-engineer": {
+      "description": "Downloads and processes weather data from ERA5/CDS, GFS/NOMADS, CHIRPS/UCSB, and Himawari-9/AWS. Best for data pipeline work.",
+      "mode": "subagent"
+    },
+    "storm-cell-analyst": {
+      "description": "Processes Himawari-9 satellite imagery for convective storm detection and tracking. Best for satellite meteorology and image processing.",
+      "mode": "subagent"
+    },
+    "viz-builder": {
+      "description": "Builds and maintains the Leaflet.js interactive weather visualization dashboard (viz.py). Best for frontend map work.",
+      "mode": "subagent"
+    }
+  }
+}
