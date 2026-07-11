@@ -1,4 +1,4 @@
-import type { GridPoint, Source, TimeValue, VarInfo } from "../types";
+import type { GridPoint, Source, StormCell, TimeValue, VarInfo } from "../types";
 
 const BASE = "/api";
 
@@ -22,6 +22,10 @@ export function fetchTimestamps(source: string, v: string): Promise<{ timestamps
 
 export function fetchFrame(source: string, v: string, ts: string): Promise<{ points: GridPoint[] }> {
   return get(`/sources/${source}/${v}/frame?ts=${encodeURIComponent(ts)}`);
+}
+
+export function fetchCells(source: string, v: string, ts: string): Promise<{ cells: StormCell[] }> {
+  return get(`/sources/${source}/${v}/cells?ts=${encodeURIComponent(ts)}`);
 }
 
 export function fetchPointSeries(

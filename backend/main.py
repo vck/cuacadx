@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .data_service import (
+    detect_himawari_cells,
     get_frame,
     get_point_series,
     get_sources,
@@ -45,6 +46,11 @@ def frame(
     ts: str = Query(..., description="Timestamp string"),
 ):
     return {"points": get_frame(source, var, ts)}
+
+
+@app.get("/api/sources/himawari9/bt/cells")
+def storm_cells(ts: str = Query(..., description="Timestamp string")):
+    return {"cells": detect_himawari_cells(ts)}
 
 
 @app.get("/api/sources/{source}/{var}/point")

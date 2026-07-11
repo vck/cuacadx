@@ -217,3 +217,22 @@ def get_variable_info(var: str) -> dict:
         "label": VARIABLE_LABELS.get(var, var),
         "unit": UNITS.get(var, ""),
     }
+
+
+# ── Storm cell detection ─────────────────────────────────────────────────
+
+def detect_himawari_cells(ts: str) -> list[dict]:
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):\d{2}", ts)
+    if not m:
+        return []
+    path = HIMAWARI_DIR / m.group(1) / m.group(2) / m.group(3) / f"{m.group(4)}{m.group(5)}" / "bt.parquet"
+    if not path.exists():
+        return []
+    from ingestion.models.storm_cell import detect_cells
+    import pyarrow.parquet as pq
+    import numpy as np
+    tbl = pq.read_table(str(path), columns=["lat", "lon", "bt_k"])
+    lat = np.array(tbl.column("lat"))
+    lon = np.array(tbl.column("lon"))
+    bt = np.array(tbl.column("bt_k"))
+    return detect_cells(bt, lat, lon)

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchFrame, fetchPointSeries, fetchSources, fetchTimestamps, fetchVariables } from "./api/weather";
+import { fetchCells, fetchFrame, fetchPointSeries, fetchSources, fetchTimestamps, fetchVariables } from "./api/weather";
 import ControlPanel from "./components/ControlPanel";
 import InfoBar from "./components/InfoBar";
 import Legend from "./components/Legend";
 import TimeSeriesChart from "./components/TimeSeriesChart";
 import WeatherMap from "./components/WeatherMap";
-import type { GridPoint, Source, TimeValue, VarInfo } from "./types";
+import type { GridPoint, Source, StormCell, TimeValue, VarInfo } from "./types";
 
 export interface SelectedPoint {
   lat: number;
@@ -20,6 +20,7 @@ export default function App() {
   const [timestamps, setTimestamps] = useState<string[]>([]);
   const [tsIdx, setTsIdx] = useState(0);
   const [points, setPoints] = useState<GridPoint[]>([]);
+  const [cells, setCells] = useState<StormCell[]>([]);
   const [playing, setPlaying] = useState(false);
   const [selPoint, setSelPoint] = useState<SelectedPoint | null>(null);
   const [series, setSeries] = useState<TimeValue[]>([]);
@@ -65,6 +66,11 @@ export default function App() {
     const ts = timestamps[tsIdx];
     if (!ts) return;
     loadFrame(source, varId, ts);
+    if (source === "himawari9" && varId === "bt" && ts) {
+      fetchCells(source, varId, ts).then((d) => setCells(d.cells));
+    } else {
+      setCells([]);
+    }
   }, [source, varId, tsIdx, timestamps, loadFrame]);
 
   useEffect(() => {
@@ -112,6 +118,7 @@ export default function App() {
         <div className="flex-1 relative">
           <WeatherMap
             points={points}
+            cells={cells}
             varId={varId}
             onPointClick={handlePointClick}
             selectedPoint={selPoint}

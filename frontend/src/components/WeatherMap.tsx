@@ -1,7 +1,7 @@
 import { useCallback } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, useMapEvents } from "react-leaflet";
+import { MapContainer, Polygon, TileLayer, CircleMarker, Popup, useMapEvents } from "react-leaflet";
 import type { LeafletMouseEvent } from "leaflet";
-import type { GridPoint } from "../types";
+import type { GridPoint, StormCell } from "../types";
 import type { SelectedPoint } from "../App";
 
 function getColor(val: number, varKey: string): string {
@@ -34,12 +34,13 @@ function ClickHandler({ onClick }: ClickHandlerProps) {
 
 interface Props {
   points: GridPoint[];
+  cells: StormCell[];
   varId: string;
   onPointClick: (lat: number, lon: number) => void;
   selectedPoint: SelectedPoint | null;
 }
 
-export default function WeatherMap({ points, varId, onPointClick, selectedPoint }: Props) {
+export default function WeatherMap({ points, cells, varId, onPointClick, selectedPoint }: Props) {
   const handleCircleClick = useCallback(
     (lat: number, lon: number, e: LeafletMouseEvent) => {
       e.originalEvent.stopPropagation();
@@ -60,6 +61,20 @@ export default function WeatherMap({ points, varId, onPointClick, selectedPoint 
         attribution='&copy; <a href="https://openstreetmap.org">OSM</a>'
       />
       <ClickHandler onClick={onPointClick} />
+
+      {cells.map((c) => (
+        <Polygon
+          key={c.cell_id}
+          positions={c.polygon.map(([lat, lon]) => [lat, lon])}
+          pathOptions={{ color: "#ff00ff", weight: 2, fillOpacity: 0.15, fillColor: "#ff00ff" }}
+        >
+          <Popup>
+            Cell #{c.cell_id}
+            <br />
+            {c.pixel_count} px · {c.centroid_lat.toFixed(2)}°, {c.centroid_lon.toFixed(2)}°
+          </Popup>
+        </Polygon>
+      ))}
 
       {points.map((p, i) => {
         const isSelected =
