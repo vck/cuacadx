@@ -2,6 +2,13 @@ import os
 from pathlib import Path
 
 
+KALIMANTAN_BBOX = {
+    "lat_min": -4.5,
+    "lat_max": 4.5,
+    "lon_min": 108.5,
+    "lon_max": 119.5,
+}
+
 KALTIM_BBOX = {
     "lat_min": -3.0,
     "lat_max": 3.0,
@@ -59,5 +66,11 @@ CDS_URL = "https://cds.climate.copernicus.eu/api"
 CDS_KEY = os.environ.get("CDSAPI_KEY", "")
 
 
+AIFS_VARIABLES = [
+    "t2m", "d2m", "u10", "v10", "sp", "msl", "tp",
+]
+
+AIFS_DIR = DATA_DIR / "aifs"
+
 YEAR_START = 2020
-YEAR_END = 2024
+YEAR_END = 2025
