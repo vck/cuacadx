@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ERA5_DIR = ROOT / "data" / "era5"
 GFS_DIR = ROOT / "data" / "gfs"
 HIMAWARI_DIR = ROOT / "data" / "himawari9"
+FCN_DIR = ROOT / "data" / "fcn"
 
 TRANSFORMS = {
     "t2m": lambda v: round(v - 273.15, 1),
@@ -19,9 +20,45 @@ TRANSFORMS = {
     "tp": lambda v: round(v, 5),
 }
 
+# FCN-specific transforms
+FCN_TRANSFORMS = {
+    "t2m": lambda v: round(v - 273.15, 1),
+    "t850": lambda v: round(v - 273.15, 1),
+    "t500": lambda v: round(v - 273.15, 1),
+    "t250": lambda v: round(v - 273.15, 1),
+    "sp": lambda v: round(v / 100, 1),
+    "msl": lambda v: round(v / 100, 1),
+    "u10m": lambda v: round(v, 1),
+    "v10m": lambda v: round(v, 1),
+    "u100m": lambda v: round(v, 1),
+    "v100m": lambda v: round(v, 1),
+    "u250": lambda v: round(v, 1),
+    "v250": lambda v: round(v, 1),
+    "u850": lambda v: round(v, 1),
+    "v850": lambda v: round(v, 1),
+    "u1000": lambda v: round(v, 1),
+    "v1000": lambda v: round(v, 1),
+    "u500": lambda v: round(v, 1),
+    "v500": lambda v: round(v, 1),
+    "z1000": lambda v: round(v / 9.80665, 1),
+    "z850": lambda v: round(v / 9.80665, 1),
+    "z500": lambda v: round(v / 9.80665, 1),
+    "z250": lambda v: round(v / 9.80665, 1),
+    "z50": lambda v: round(v / 9.80665, 1),
+    "r500": lambda v: round(v, 1),
+    "r850": lambda v: round(v, 1),
+    "tcwv": lambda v: round(v, 2),
+}
+
 UNITS = {
     "t2m": "°C", "d2m": "°C", "u10": "m/s", "v10": "m/s",
     "sp": "hPa", "msl": "hPa", "tp": "m", "bt": "K",
+    "t850": "°C", "t500": "°C", "t250": "°C",
+    "u10m": "m/s", "v10m": "m/s", "u100m": "m/s", "v100m": "m/s",
+    "u250": "m/s", "v250": "m/s", "u850": "m/s", "v850": "m/s",
+    "u1000": "m/s", "v1000": "m/s", "u500": "m/s", "v500": "m/s",
+    "z1000": "m", "z850": "m", "z500": "m", "z250": "m", "z50": "m",
+    "r500": "%", "r850": "%", "tcwv": "kg/m²",
 }
 
 VARIABLE_LABELS = {
@@ -29,9 +66,22 @@ VARIABLE_LABELS = {
     "u10": "U Wind (10m)", "v10": "V Wind (10m)",
     "sp": "Surface Pressure", "msl": "MSL Pressure",
     "tp": "Precipitation", "bt": "BT Band 13",
+    "t850": "Temp @ 850hPa", "t500": "Temp @ 500hPa", "t250": "Temp @ 250hPa",
+    "u10m": "U Wind @ 10m", "v10m": "V Wind @ 10m",
+    "u100m": "U Wind @ 100m", "v100m": "V Wind @ 100m",
+    "u250": "U Wind @ 250hPa", "v250": "V Wind @ 250hPa",
+    "u850": "U Wind @ 850hPa", "v850": "V Wind @ 850hPa",
+    "u1000": "U Wind @ 1000hPa", "v1000": "V Wind @ 1000hPa",
+    "u500": "U Wind @ 500hPa", "v500": "V Wind @ 500hPa",
+    "z1000": "Geopotential @ 1000hPa", "z850": "Geopotential @ 850hPa",
+    "z500": "Geopotential @ 500hPa", "z250": "Geopotential @ 250hPa",
+    "z50": "Geopotential @ 50hPa",
+    "r500": "Rel Humidity @ 500hPa", "r850": "Rel Humidity @ 850hPa",
+    "tcwv": "Total Column Water Vapor",
 }
 
 ALL_VARIABLES = list(TRANSFORMS.keys())
+FCN_VARIABLES = list(FCN_TRANSFORMS.keys())
 
 # Downsample himawari: keep 1 out of every N rows to stay fast
 HIMAWARI_DOWNSAMPLE = 5
@@ -46,6 +96,9 @@ def _find_gfs_latest() -> Path | None:
                 if cycle_dir.is_dir() and list(cycle_dir.glob("*.parquet")):
                     return cycle_dir
     return None
+
+
+
 
 
 def get_sources() -> list[dict]:
@@ -67,6 +120,13 @@ def get_sources() -> list[dict]:
             "description": f"Latest cycle ({gfs_dir.parent.name}/{gfs_dir.name}) · 3-6h lead · 0.25°",
             "variables": ALL_VARIABLES,
         })
+
+    sources.append({
+        "id": "fcn",
+        "name": "FourCastNet AI Forecast",
+        "description": "6-168h · 0.25° · real GFS IC + FCN v1 AFNO",
+        "variables": FCN_VARIABLES,
+    })
 
     if HIMAWARI_DIR.exists():
         sources.append({
@@ -155,6 +215,50 @@ def _load_himawari(ts: str) -> pd.DataFrame:
     return df[["lat", "lon", "v", "ts"]]
 
 
+FCN_CACHE: dict[str, pd.DataFrame] = {}
+
+
+def _load_fcn(var: str) -> pd.DataFrame:
+    if var in FCN_CACHE:
+        return FCN_CACHE[var]
+
+    logger = __import__("logging").getLogger(__name__)
+
+    # Look for latest cached forecast
+    forecast_dir = None
+    if FCN_DIR.exists():
+        for date_dir in sorted(FCN_DIR.iterdir(), reverse=True):
+            if date_dir.is_dir():
+                for cycle_dir in sorted(date_dir.iterdir(), reverse=True):
+                    if cycle_dir.is_dir():
+                        pf = cycle_dir / "forecast.parquet"
+                        if pf.exists():
+                            forecast_dir = cycle_dir
+                            break
+                if forecast_dir:
+                    break
+
+    if forecast_dir:
+        logger.info(f"Loading cached FCN forecast: {forecast_dir}")
+        df = pd.read_parquet(forecast_dir / "forecast.parquet")
+    else:
+        logger.info("No cached FCN forecast found. Generating one...")
+        from ingestion.models.fourcastnet_pipeline import VARIABLES, forecast
+        df = forecast()
+
+    for v in df["variable"].unique():
+        sub = df[df["variable"] == v].copy()
+        transform = FCN_TRANSFORMS.get(v)
+        if transform:
+            sub["v"] = sub["value"].apply(transform)
+        else:
+            sub["v"] = sub["value"]
+        sub["ts"] = "lead " + sub["lead_time_h"].astype(str) + "h"
+        FCN_CACHE[v] = sub[["lat", "lon", "v", "ts"]]
+
+    return FCN_CACHE.get(var, pd.DataFrame())
+
+
 @lru_cache(maxsize=32)
 def _cached_load(source: str, var: str) -> pd.DataFrame:
     if source == "era5":
@@ -163,6 +267,8 @@ def _cached_load(source: str, var: str) -> pd.DataFrame:
         return _load_gfs(var)
     elif source == "himawari9":
         return _load_himawari(var)
+    elif source == "fcn":
+        return _load_fcn(var)
     return pd.DataFrame()
 
 

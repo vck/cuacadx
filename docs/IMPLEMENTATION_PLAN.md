@@ -1,217 +1,352 @@
-# CUACADX — Implementation Plan: FourCastNet + Flood Risk Engine
+# CUACADX — Production Weather Intelligence Platform
 
-## Objective
-Build a regional weather intelligence engine for whole **Kalimantan** using NVIDIA **FourCastNet** as the global weather model, **Himawari-9** for nowcasting (0-6h), and a **rule-based flood risk layer** as the product IP.
+## Product Vision
 
-Infra: **CPU-only M1 Mac** for development, **$5-20/mo VPS** for deployment. No GPU needed.
+A **regional weather intelligence engine** for Kalimantan that delivers actionable forecasts to industrial operators — mining (ITMG), palm oil plantations, energy infrastructure — enabling **risk-aware decision-making** from 0 to 168 hours ahead.
+
+**Core value proposition**: weather risk translated into operational cost/impact, not just numbers on a map.
 
 ---
 
-## 1. Model Choice: FourCastNet v1 (AFNO)
+## 1. Market & Use Cases
 
-| Variant | Size | Format | CPU on M1 | Precip? | How to get |
-|---|---|---|---|---|---|
-| **✓ FourCastNet v1 (AFNO)** | ~50MB | ONNX | ✅ Fast, 1-3s/step | Separate model, derived from TCWV/RH | `ai-models-fourcastnet` or NGC direct |
-| FourCastNet v2 (SFNO) small | 2.93GB | PyTorch | ⚠️ Heavy | 73 vars, includes tp directly | NGC `modulus_fcnv2_sm` |
-| FourCastNet 3 | Container | NIM | ❌ GPU-only | Ensemble probabilistic | NGC container |
-| FourCastNeXt | ~50MB | PyTorch | ⚠️ Needs PyTorch | 20 vars (RH + TCWV) | GitHub `nci/FourCastNeXt` |
+### Mining (contractor liability, equipment safety)
+| Decision | Weather Input | Lead Time | Business Impact |
+|---|---|---|---|
+| Haul road passability | Precip intensity (0-6h) + soil moisture | 0-24h | Idle haulers: ~$5k/hr per fleet |
+| Overburden/blast windows | Wind speed (10m, 100m), lightning risk | 0-72h | Missed blast = 1 shift lost |
+| Pit dewatering planning | Precip accumulation (72-168h) | 72-168h | Sump capacity planning |
+| Coal stockpile moisture | Precip + RH + surface temp | 0-48h | Reject moisture penalties |
 
-**Winner: FourCastNet v1 ONNX** — smallest download, CPU-native, fastest path to running on this machine.
+### Plantation (harvest/logistics, fire prevention)
+| Decision | Weather Input | Lead Time | Business Impact |
+|---|---|---|---|
+| Harvest scheduling | Precip probability (0-72h) | 0-72h | Wet FFB = lower CPO quality |
+| Fertilizer application | Wind + precip-free window | 0-24h | Runoff loss: ~30% of applied NPK |
+| Fire risk | Temp + RH + wind + drought index | 0-168h | Legal liability, satellite fire alerts |
+| FFB transport | Road condition (precip × cumulative) | 0-48h | Logistics delays to mill |
+
+### Energy (load forecasting, infrastructure protection)
+| Decision | Weather Input | Lead Time | Business Impact |
+|---|---|---|---|
+| Load forecasting | Temp + humidity (cooling demand) | 0-168h | Peaker plant dispatch cost |
+| Hydro generation | Catchment precip (accumulated) | 24-168h | Reservoir management |
+| Transmission line | Wind gust + lightning risk | 0-24h | Line derating |
+| Solar farm | Cloud cover (Himawari BT proxy) | 0-6h | Duck curve management |
 
 ---
 
 ## 2. Architecture
 
 ```
-┌──────────────────────────────┐     ┌───────────────────────────────┐
-│  GFS Analysis (0.25°, 4x/d)  │     │  Himawari-9 (10-min, IR B13)   │
-│  → regrid to 20-var tensor   │     │  → rainfall-rate retrieval      │
-└──────────────┬───────────────┘     └──────────────┬────────────────┘
-               │                                     │
-               ▼                                     ▼
-       ┌─────────────────────────────────────────────────────┐
-       │  FourCastNet ONNX Inference (1-3s/step, M1 CPU)      │
-       │  6h → 12h → 18h → ... → 168h (auto-regressive)       │
-       │  Output: 20 vars, 0.25° global, cropped to Kalimantan │
-       └──────────────────────┬────────────────────────────────┘
-                              ▼
-       ┌─────────────────────────────────────────────────────┐
-       │  Precip Accumulation + DEM (SRTM 30m) → Flood Risk   │
-       │  Rule-based scoring: precip_24h × terrain_wetness     │
-       └──────────────────────┬────────────────────────────────┘
-                              ▼
-       ┌─────────────────────────────────────────────────────┐
-       │  Parquet Store + FastAPI + React Dashboard             │
-       │  + Flood risk overlay + point query API               │
-       └─────────────────────────────────────────────────────┘
+                    ┌─────────────────────────────────────┐
+                    │         Data Ingestion Layer         │
+                    │  Himawari-9  │  GFS  │  CHIRPS  │ DEM│
+                    └──────┬──────┴──┬────┴────┬─────┴────┘
+                           │         │         │
+                    ┌──────▼─────────▼─────────▼──────────┐
+                    │      Model Layer                    │
+                    │  FourCastNet AFNO (6-168h)          │
+                    │  Storm cell detection (0-6h)        │
+                    │  Optical-flow precip (0-6h)         │
+                    │  Flood risk engine                  │
+                    └──────┬──────────────────────────────┘
+                           │
+                    ┌──────▼──────────────────────────────┐
+                    │      Fusion Layer                   │
+                    │  0-6h: Himawari-weighted nowcast    │
+                    │  6-168h: FCN pure                   │
+                    │  Both: DEM downscaling              │
+                    └──────┬──────────────────────────────┘
+                           │
+                    ┌──────▼──────────────────────────────┐
+                    │      Serving Layer                  │
+                    │  DuckDB / Parquet → FastAPI → React │
+                    └─────────────────────────────────────┘
+```
+
+### 2.1 Data Flow
+
+```
+GFS analysis (0.25°, f000, 26 vars)
+        │
+        ▼
+  [STUBBED] → FourCastNet AFNO (28 steps, 6h each)
+        │
+        ▼
+  Cropped to Kalimantan bbox (37×45 grid ≈ 1665 pts)
+        │
+        ▼
+  Parquet: forecast.parquet (1.2M rows, ~64MB)
+        │
+        ▼
+  FastAPI serves subset (frame, point, timeline) via DuckDB
 ```
 
 ---
 
-## 3. Phased Implementation
+## 3. Frontend Dashboard
 
-### Phase 0 — Model & Dependencies (1 day)
-```
-- pip install onnxruntime-silicon (M1/Apple Silicon optimized)
-- Download FourCastNet v1 ONNX weights (~50MB)
-  → via `pip install ai-models-fourcastnet` (auto-downloads)
-  → OR download ONNX directly from NGC/ECMWF
-- Verify single inference step works with sample input
-- Benchmark: time per 6h step on M1
-```
+### 3.1 MVP (Current)
 
-### Phase 1 — Input Data Pipeline (2 days)
-```
-GFS analysis → FourCastNet input tensor (1, 20, 721, 1440)
+**Stack**: React 18 + Vite + Leaflet + Recharts
 
-Variables needed (20):
-  Surface:  u10, v10, t2m, sp, msl, tcwv  (6)
-  Upper:    u, v, z, t, q  at 13 levels    (14)
-
-Pipeline:
-  1. Fetch latest GFS analysis (we have gfs_client.py)
-  2. Remap GFS native grid → 0.25° regular lat/lon
-  3. Interpolate missing pressure levels if needed
-  4. Normalize using ERA5 stats (mean/std per variable)
-  5. Stack into (1, 20, 721, 1440) numpy array → .npy file
-
-Alternative shortcut:
-  - Use ECMWF ai-models framework (if connectivity issues resolved)
-  - Or copy ai-models' input preparation code for local use
-```
-
-### Phase 2 — Inference & Output (1 day)
-```
-Auto-regressive loop:
-  input = initial_analysis.npy
-  for lead in [6, 12, 18, 24, 36, 48, 72, 96, 120, 144, 168]:
-      output = fourcastnet_model.run(input)
-      save output cropped to Kalimantan bbox → Parquet
-      input = output  # feed back for next step
-
-Output storage:
-  /data/fourcastnet/{YYYYMMDD}/{HH}/{lead}h/{var}.parquet
-  - schema: lat, lon, value, ts, lead_hour, variable
-  - same pattern as existing GFS/ERA5 data
-
-Variables to extract (prioritize for flood):
-  tp (total precip) — if available
-  tcwv (total column water vapor) — moisture proxy
-  t2m, u10, v10, msl, sp — for context
-```
-
-### Phase 3 — DEM & Terrain (1 day)
-```
-1. Download SRTM 30m tiles covering Kalimantan bbox
-   → ~12 tiles (1°×1° each), ~50MB total
-   → Source: USGS EarthExplorer or OpenTopography
-
-2. Build elevation lookup at 0.005° (~500m) grid:
-   - Elevation (m)
-   - Slope (degrees)
-   - Terrain Wetness Index = ln(flow_accum / tan(slope))
-   - Flow direction / accumulation (using pysheds or richdem)
-
-3. Store as Parquet: /data/static/dem.parquet
-   - schema: lat, lon, elevation_m, slope_deg, twi
-```
-
-### Phase 4 — Flood Risk Engine (2 days)
-```
-Rule-based v1 — no ML, no GPU.
-
-For any point (lat, lon, timestamp):
-  1. Fetch FourCastNet precip accumulation for 6h, 12h, 24h windows
-  2. Fetch DEM data: elevation, slope, TWI
-  3. Compute risk factors:
-     - precip_score = precip_24h / threshold (e.g. 100mm)
-     - terrain_score = 1 - min(slope / 5°, 1)  # flat = risky
-     - wetness_score = min(TWI / 15, 1)  # higher TWI = wetter
-  4. Aggregate: risk_score = (precip_score × 0.5
-                              + terrain_score × 0.3
-                              + wetness_score × 0.2) × 5
-     Clamp to 0-5 scale.
-
-Risk levels:
-  0 (none):      < 30mm/24h + good drainage
-  1 (low):       30-60mm + moderate
-  2 (moderate):  60-100mm + moderate
-  3 (high):      60-100mm + flat
-  4 (very high): 100-150mm + flat/poor drainage
-  5 (extreme):   > 150mm + flat/poor drainage
-
-Storage: DuckDB table `flood_risk`
-  (ts, lat, lon, precip_6h, precip_12h, precip_24h,
-   elevation_m, slope_deg, risk_score, risk_label)
-```
-
-### Phase 5 — Backend Integration (2 days)
-```
-New source: "fourcastnet" in backend/data_service.py
-  - /api/sources → includes fourcastnet
-  - /api/sources/fourcastnet/variables → tp, t2m, u10, v10, msl, sp
-  - /api/sources/fourcastnet/{var}/timestamps → forecast cycles
-  - /api/sources/fourcastnet/{var}/frame → grid data
-  - /api/sources/fourcastnet/{var}/point → point time series
-
-New endpoints:
-  - POST /api/flood/risk
-      Body: { "lat": ..., "lon": ..., "cycle_ts": "..." }
-      Response: { "risk_score": 3, "risk_label": "high",
-                  "precip_24h": 85.2, "elevation_m": 42,
-                  "contributing_factors": { ... } }
-
-  - GET /api/flood/map?ts=...&source=fourcastnet
-      Response: { "grid": [{lat, lon, risk_score}, ...] }
-```
-
-### Phase 6 — Frontend (2 days)
-```
-1. Add fourcastnet as a selectable source in ControlPanel
-2. Variables: tp (precip), t2m, u10, v10, msl, sp
-3. Flood risk overlay:
-   - When flood risk endpoint is active, overlay risk heatmap
-   - Color scale: green(0) → yellow(2) → orange(3) → red(5)
-   - Semi-transparent polygons covering risk zones
-4. Point click on risk map shows contributing factors tooltip
-5. Legend shows risk scale + current source variable
-```
-
----
-
-## 4. Timeline Summary
-
-| Phase | Days | Deliverable |
+**Current routes**:
+| Route | Asset | Status |
 |---|---|---|
-| 0 — Model setup | 1 | FourCastNet ONNX running on M1 |
-| 1 — Input pipeline | 2 | GFS→model input conversion works |
-| 2 — Inference loop | 1 | Forecast Parquet files generated |
-| 3 — DEM import | 1 | Elevation + wetness index for Kalimantan |
-| 4 — Flood engine | 2 | Risk scores for any lat/lon |
-| 5 — Backend API | 2 | `/api/flood/risk` endpoint live |
-| 6 — Frontend | 2 | Flood overlay on map |
-| **Total** | **~11 days** | |
+| `/` | Map with source selector | Done |
+| BT Band 13 color layer | Blue→red→white diverging | Done |
+| Storm cell polygon overlay | Detected cells | Done |
+| Legend | Dynamic per variable | Done |
+| TimeSeriesChart | Point click → time series | Done |
+| AnimControls | Basic playback | Done |
 
----
+### 3.2 V1.0 Dashboard (Next)
 
-## 5. Infrastructure (VPS)
+**New elements:**
 
-| Tier | Provider | Spec | Cost/mo | Use |
-|---|---|---|---|---|
-| MVP | Hetzner CX22 | 2 vCPU, 4GB RAM, 40GB SSD | ~€4.49 (~$5) | Daily inference + API |
-| With storage | + Backblaze B2 | S3-compatible, 10GB | ~$0.50 | Historical Parquet archive |
-| Total | | | **~$5.50/mo** | |
-
-No GPU needed. $20/mo is generous — leftover can fund occasional GPU spot rental for benchmarking.
-
----
-
-## 6. Risks & Mitigations
-
-| Risk | Likelihood | Mitigation |
+| Component | Description | Priority |
 |---|---|---|
-| ECMWF open data connectivity issues | Medium | Fall back to GFS analysis (already working) |
-| FourCastNet precip quality on tropics | Medium | v1: use GFS precip directly, FourCastNet for context. Calibrate with CHIRPS. |
-| SRTM DEM download size | Low | ~50MB for Kalimantan tiles |
-| ONNX model ops not supported on M1 | Low | onnxruntime-silicon covers ARM NEON ops |
-| Inference speed too slow for batch | Low | 1-3s/step × 28 steps = ~1 min per cycle, fine |
+| **Source tab bar** | Horizontal tabs: Himawari / FCN / ERA5 / GFS | P0 |
+| **Variable selector** | Dropdown within each source (BT, t2m, u10m, sp, etc.) | P0 |
+| **Lead time slider** | 6-168h for FCN, uses timestamp for others | P0 |
+| **Layer toggle** | Checkboxes: base map, BT raster, cell polygons, road overlay | P1 |
+| **Point info popup** | Click lat/lon → show all variables at that point | P1 |
+| **Alert panel** | Right sidebar: storm cells, heavy precip, flood risk | P1 |
+| **Station overlay** | BMKG station markers (if data becomes available) | P2 |
+
+**Dashboard layout:**
+```
+┌─────────────┬─────────────────────────────────┬──────────────┐
+│  Left Panel │        Map (Leaflet)            │ Right Panel  │
+│  ─────────  │                                 │  ──────────  │
+│  Source Tab │  • Base layer (OSM/Dark)        │  Alerts      │
+│  Variable   │  • Weather overlay              │  Storm cells │
+│  Lead Time  │  • Cell polygons                │  Flood risk  │
+│  Legend     │  • Click for point              │  Point info  │
+│             │                                 │              │
+├─────────────┴─────────────────────────────────┴──────────────┤
+│                Bottom Panel: Time Series Chart                │
+│     (Selected point: t2m, precip, wind by lead time)         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 3.3 Frontend API integration
+
+```typescript
+// Type definitions
+interface FramePoint {
+  lat: number;
+  lon: number;
+  v: number;
+}
+
+interface CellPolygon {
+  lat: number;
+  lon: number;
+  bbox: [number, number, number, number];
+  area_km2: number;
+  motion: { u: number; v: number } | null;
+}
+
+interface TimeSeriesPoint {
+  ts: string;
+  v: number;
+}
+
+// API calls
+GET  /api/sources                                    → Source[]
+GET  /api/sources/{source}/variables                  → VariableInfo[]
+GET  /api/sources/{source}/{var}/timestamps           → string[]
+GET  /api/sources/{source}/{var}/frame?ts={ts}        → FramePoint[]
+GET  /api/sources/himawari9/bt/cells?ts={ts}          → CellPolygon[]
+GET  /api/sources/{source}/{var}/point?lat=&lon=      → TimeSeriesPoint[]
+```
+
+---
+
+## 4. Backend APIs (Complete Spec)
+
+### 4.1 Data Sources
+
+| Source | Variables | Available | Times |
+|---|---|---|---|
+| `himawari9` | bt, bt_cells | Now | ~260/day (every 10 min) |
+| `fcn` | 26 vars (u10m..t250) | Now (stub IC) | 28 lead times (6-168h) |
+| `era5` | t2m, d2m, u10, v10, sp, msl, tp | Now | Jan 2024 hourly |
+| `gfs` | t2m, d2m, u10, v10, sp, msl, tp | Now | 6h cycle, 0-48h |
+
+### 4.2 Planned Endpoints
+
+| Endpoint | Method | Purpose | Priority |
+|---|---|---|---|
+| `/api/flood/risk` | GET | Flood risk map for given lead time | P1 |
+| `/api/flood/point` | GET | Flood risk at specific lat/lon | P1 |
+| `/api/alerts` | GET | Active alerts (storm, heavy precip, flood) | P1 |
+| `/api/forecast/summary` | GET | Text summary of key variables for ops | P2 |
+| `/api/export/csv` | GET | Download point forecast as CSV | P2 |
+
+### 4.3 Flood Risk Endpoint
+
+```python
+GET /api/flood/risk?ts=lead+6h&lat=-2.0&lon=115.0
+
+Response:
+{
+  "risk_level": 0-5,
+  "factors": {
+    "precip_24h_mm": 78.5,
+    "twi": 12.3,
+    "slope_pct": 2.1,
+    "soil_saturation_idx": 0.65
+  },
+  "recommendation": "Monitor - sustained precip expected"
+}
+```
+
+---
+
+## 5. Implementation Roadmap
+
+### Phase 0: Foundation (Done)
+- [x] FourCastNet model loaded (75M params, AFNO, ~4s/step)
+- [x] Stub IC → 28-step forecast → Kalimantan crop → Parquet
+- [x] Himawari-9 pipeline (HSD, BT, geolocation, 10-min data)
+- [x] Storm cell detection + tracking
+- [x] FastAPI backend with ERA5/GFS/Himawari/FCN sources
+- [x] React Leaflet dashboard (BT layer, cells, legend, timeseries)
+
+### Phase 1: Production Backend (Now → 2 weeks)
+
+| Task | Effort | Dependencies |
+|---|---|---|
+| **FIX: FourCastNet divergence** — check residual vs direct prediction | 2d | Understanding model internals |
+| **FIX: GFS IC download** — sequential retry, rate-limit aware | 1d | GFS server docs |
+| **Real GFS → FCN tensor** — 26-var pipeline, no stub | 3d | GFS fix |
+| **DuckDB integration** — replace pandas for frame loads | 2d | — |
+| **Caching layer** — Redis or in-memory LRU for model outputs | 1d | — |
+| **Background forecast worker** — separate process, schedule every 6h | 2d | GFS fix |
+| **API rate limiting + auth** — API key per client | 1d | — |
+
+### Phase 2: Dashboard V1 (Week 3-4)
+
+| Task | Effort | Dependencies |
+|---|---|---|
+| Source tab bar + variable dropdown | 2d | Phase 1 API |
+| Lead time slider for FCN | 1d | Phase 1 API |
+| Point info popup on map click | 2d | Phase 1 API |
+| Right sidebar: alerts panel | 3d | Storm cell API |
+| Time series chart (all vars) | 2d | — |
+| Dark mode map (CartoDB dark) | 0.5d | — |
+| AnimControls: play/pause/loop for lead times | 1d | — |
+
+### Phase 3: Flood Risk Engine (Week 5-6)
+
+| Task | Effort | Dependencies |
+|---|---|---|
+| **DEM download** — SRTM 30m for Kalimantan via OpenTopography | 1d | |
+| **Flow accumulation + TWI** via pysheds | 3d | DEM |
+| **Rule-based flood risk** (precip × slope × TWI → risk 0-5) | 2d | TWI, FCN precip |
+| **Flood risk API endpoint** | 1d | Rule engine |
+| **Flood layer on map** | 2d | Flood API |
+| **CHIRPS percentiles** — adaptive thresholds per location | 2d | CHIRPS client |
+
+### Phase 4: Nowcast + Fusion (Week 7-8)
+
+| Task | Effort | Dependencies |
+|---|---|---|
+| **Optical-flow rainfall advection** (Farneback/LucKanade) | 4d | Himawari pipeline |
+| **0-6h nowcast from Himawari** | 2d | Optical flow |
+| **Himawari + FCN fusion** — seamless transition at 6h | 3d | Nowcast + FCN |
+| **Downscaling** — statistical (DEM-aware, bilinear) | 2d | DEM |
+| **Verification** — compare FCN outputs vs ERA5 reanalysis | 3d | FCN pipeline |
+
+### Phase 5: Business Layer (Week 9-10)
+
+| Task | Effort | Dependencies |
+|---|---|---|
+| **Alert rules engine** — configurable thresholds per client | 3d | All data pipelines |
+| **Export endpoints** — CSV, PDF report, image snapshot | 2d | Dashboard |
+| **Client dashboard** — per-company view (multi-tenant) | 4d | Auth |
+| **Webhook alerts** — Telegram, Email, SMS gateway | 2d | Alert engine |
+| **Historical analytics** — verify forecast skill vs ERA5/GFS | 3d | — |
+
+### Phase 6: Scale & Optimize (Ongoing)
+
+| Task | Effort | Dependencies |
+|---|---|---|
+| Auto-regressive instability investigation | 3d | Model internals |
+| ONNX export from Modulus (faster CPU inference) | 3d | physicsnemo |
+| Termux deployment testing | 2d | Phase 5 |
+| Multi-model ensemble (FCN + Pangu) | 5d | — |
+| ML flood classifier (XGBoost) | 5d | Historical flood data |
+
+---
+
+## 6. Business Model
+
+### 6.1 Target Segments
+
+| Segment | Players | Pain Point | Willingness to Pay |
+|---|---|---|---|
+| **Coal mining** | ITMG, ADRO, BUMI, PTBA | Rain downtime planning | High (lost revenue $k/hr) |
+| **Palm oil** | AALI, LSIP, SIMP, SMAR | Harvest/logistics windows | Medium |
+| **Energy** | PLN, geothermal operators | Load forecast, transmission | Medium-High |
+| **Govt/Disaster** | BNPB, BMKG | Early warning | Low (budget constrained) |
+
+### 6.2 Pricing Tiers
+
+| Tier | Price | Features |
+|---|---|---|
+| **Basic** | $199/mo | 48h forecast, 3 vars (t2m, precip, wind), email alerts |
+| **Pro** | $499/mo | 168h forecast, all vars, storm cells, flood risk, API |
+| **Enterprise** | $1,999/mo | White-label dashboard, custom thresholds, SLA, on-prem deploy |
+
+### 6.3 Key Metrics for Success
+
+| Metric | Target | How |
+|---|---|---|
+| Forecast accuracy (t2m) | RMSE < 2.5°C at 24h | Compare with BMKG obs |
+| Storm cell detection | Precision > 0.7, Recall > 0.6 | Verify against Himawari RGB |
+| API uptime | 99.5% | Background worker + health checks |
+| Dashboard TTFB | < 2s (cold), < 500ms (cached) | DuckDB + LRU cache |
+| Cold forecast latency | < 10 min (download + model) | Async worker pool |
+
+---
+
+## 7. Technology Stack
+
+| Layer | Technology | Rationale |
+|---|---|---|
+| **Global model** | FourCastNet v1 AFNO | 75M params, CPU-native, Apache 2.0 |
+| **Framework** | earth2studio + nvidia-physicsnemo | NVIDIA ecosystem, Modulus support |
+| **IC source** | GFS analysis (0.25°, NOMADS) | Free, real-time, 26 vars |
+| **Satellite** | Himawari-9 HSD (AWS) | 10-min IR, free, 2km resolution |
+| **Reanalysis** | ERA5 (CDS) | Historical verification (5-day delay) |
+| **Storage** | Parquet + DuckDB | Columnar, fast slices, single file |
+| **API** | FastAPI + uvicorn | Python-native, async, auto-docs |
+| **Frontend** | React 18 + Vite + Leaflet + Recharts | Lightweight, map-centric |
+| **Deployment** | Hetzner CX32 (4 vCPU, 8GB) | $7/mo, or Oracle Free Tier |
+| **Field** | Termux (Android) | Offline-capable, ARM64 |
+
+---
+
+## 8. Risk Matrix
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| FourCastNet divergence unsolvable (step 2+ blows up) | Medium | High | Residual-vs-direct investigation; fallback to Pangu; skip auto-regression, use 1-step nowcast only |
+| GFS NOMADS rate limiting | High | Medium | Sequential retry, fallback to GDAS or S3 mirror |
+| Himawari AWS bandwidth (mobile data) | Medium | Low | Optimistic caching, user-configurable resolution |
+| Competitor launches similar product | Low | Medium | Focus on Kalimantan-specific flood risk (hard to replicate) |
+| Client churn after trial | Medium | Medium | Prove forecast skill with 1-month ERA5 verification |
+
+---
+
+## 9. Success Criteria for MVP
+
+1. **Functional**: All 26 FCN variables served via API, cropped to Kalimantan
+2. **Stable**: Model runs through 28 steps without divergence
+3. **Fast**: Full forecast in < 5 min, frame API in < 200ms
+4. **Visual**: Dashboard shows BT + FCN overlays with lead time slider
+5. **Business**: At least 1 pilot client using dashboard for daily decisions
