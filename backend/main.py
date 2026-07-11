@@ -1,0 +1,57 @@
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+
+from .data_service import (
+    get_frame,
+    get_point_series,
+    get_sources,
+    get_timestamps,
+    get_variable_info,
+)
+
+app = FastAPI(title="CUACADX API", version="0.1")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/api/sources")
+def list_sources():
+    return {"sources": get_sources()}
+
+
+@app.get("/api/sources/{source}/variables")
+def list_variables(source: str):
+    srcs = get_sources()
+    for s in srcs:
+        if s["id"] == source:
+            return {"variables": [get_variable_info(v) for v in s["variables"]]}
+    return {"variables": []}
+
+
+@app.get("/api/sources/{source}/{var}/timestamps")
+def timestamps(source: str, var: str):
+    return {"timestamps": get_timestamps(source, var)}
+
+
+@app.get("/api/sources/{source}/{var}/frame")
+def frame(
+    source: str,
+    var: str,
+    ts: str = Query(..., description="Timestamp string"),
+):
+    return {"points": get_frame(source, var, ts)}
+
+
+@app.get("/api/sources/{source}/{var}/point")
+def point_series(
+    source: str,
+    var: str,
+    lat: float = Query(...),
+    lon: float = Query(...),
+):
+    return {"series": get_point_series(source, var, lat, lon)}

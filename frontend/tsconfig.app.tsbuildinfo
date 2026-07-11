@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/api/weather.ts","./src/components/controlpanel.tsx","./src/components/infobar.tsx","./src/components/legend.tsx","./src/components/timeserieschart.tsx","./src/components/weathermap.tsx"],"version":"5.7.3"}
