@@ -9,8 +9,9 @@ from .data_service import (
     get_timestamps,
     get_variable_info,
 )
+from .sites import get_alerts, get_site_conditions, get_sites
 
-app = FastAPI(title="CUACADX API", version="0.1")
+app = FastAPI(title="CUACADX API — Mining Weather Intelligence", version="0.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,3 +62,21 @@ def point_series(
     lon: float = Query(...),
 ):
     return {"series": get_point_series(source, var, lat, lon)}
+
+
+# ── Mining Dashboard Endpoints ─────────────────────────────────────
+
+
+@app.get("/api/sites")
+def list_sites():
+    return {"sites": get_sites()}
+
+
+@app.get("/api/sites/conditions")
+def site_conditions(site_id: str | None = None):
+    return {"conditions": get_site_conditions(site_id)}
+
+
+@app.get("/api/alerts")
+def alerts(site_id: str | None = None):
+    return {"alerts": get_alerts(site_id)}

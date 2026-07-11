@@ -1,4 +1,4 @@
-import type { GridPoint, Source, StormCell, TimeValue, VarInfo } from "../types";
+import type { Alert, GridPoint, SiteCondition, SiteInfo, Source, StormCell, TimeValue, VarInfo } from "../types";
 
 const BASE = "/api";
 
@@ -35,4 +35,18 @@ export function fetchPointSeries(
   lon: number,
 ): Promise<{ series: TimeValue[] }> {
   return get(`/sources/${source}/${v}/point?lat=${lat}&lon=${lon}`);
+}
+
+// ── Mining Dashboard API ──────────────────────────────────────────
+
+export function fetchSites(): Promise<{ sites: SiteInfo[] }> {
+  return get("/sites");
+}
+
+export function fetchSiteConditions(): Promise<{ conditions: SiteCondition[] }> {
+  return get("/sites/conditions");
+}
+
+export function fetchAlerts(): Promise<{ alerts: Alert[] }> {
+  return get("/alerts");
 }

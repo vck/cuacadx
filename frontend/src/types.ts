@@ -33,3 +33,36 @@ export interface StormCell {
   max_lon: number;
   polygon: [number, number][];
 }
+
+export interface SiteInfo {
+  id: string;
+  name: string;
+  type: string;
+  lat: number;
+  lon: number;
+  thresholds: Record<string, number>;
+}
+
+export interface SiteCondition {
+  site_id: string;
+  site_name: string;
+  site_type: string;
+  lat: number;
+  lon: number;
+  temp_c: number;
+  wind_kmh: number;
+  rain_mm: number;
+  pressure_hpa: number;
+  humidity_pct: number;
+  severities: Record<string, { level: number; label: string }>;
+}
+
+export interface Alert {
+  ts: string;
+  severity: string;
+  site: string;
+  threat: string;
+  message: string;
+}
+
+export type LayerId = "rain" | "cells" | "wind" | "sites";

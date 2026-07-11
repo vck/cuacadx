@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
-import { fetchCells, fetchFrame, fetchPointSeries, fetchSources, fetchTimestamps, fetchVariables } from "./api/weather";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchAlerts, fetchCells, fetchFrame, fetchPointSeries, fetchSites, fetchSiteConditions, fetchSources, fetchTimestamps, fetchVariables } from "./api/weather";
+import AlertPanel from "./components/AlertPanel";
 import ControlPanel from "./components/ControlPanel";
+import ForecastTiles, { buildForecast, type DayForecast } from "./components/ForecastTiles";
 import InfoBar from "./components/InfoBar";
+import LayerToggle from "./components/LayerToggle";
 import Legend from "./components/Legend";
+import OpsStatusBar from "./components/OpsStatusBar";
+import SidebarMetrics from "./components/SidebarMetrics";
+import SiteSelector from "./components/SiteSelector";
 import TimeSeriesChart from "./components/TimeSeriesChart";
 import WeatherMap from "./components/WeatherMap";
-import type { GridPoint, Source, StormCell, TimeValue, VarInfo } from "./types";
+import type { Alert, GridPoint, LayerId, SiteCondition, SiteInfo, Source, StormCell, TimeValue, VarInfo } from "./types";
 
 export interface SelectedPoint {
   lat: number;
@@ -13,8 +19,9 @@ export interface SelectedPoint {
 }
 
 export default function App() {
+  // ── Core weather data ──
   const [sources, setSources] = useState<Source[]>([]);
-  const [source, setSource] = useState("era5");
+  const [source, setSource] = useState("fcn");
   const [variables, setVariables] = useState<VarInfo[]>([]);
   const [varId, setVarId] = useState("t2m");
   const [timestamps, setTimestamps] = useState<string[]>([]);
@@ -22,15 +29,39 @@ export default function App() {
   const [points, setPoints] = useState<GridPoint[]>([]);
   const [cells, setCells] = useState<StormCell[]>([]);
   const [playing, setPlaying] = useState(false);
-  const [selPoint, setSelPoint] = useState<SelectedPoint | null>(null);
-  const [series, setSeries] = useState<TimeValue[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // ── Mining dashboard data ──
+  const [sites, setSites] = useState<SiteInfo[]>([]);
+  const [activeSite, setActiveSite] = useState("bengalon");
+  const [conditions, setConditions] = useState<SiteCondition[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+
+  // ── Map interaction ──
+  const [selPoint, setSelPoint] = useState<SelectedPoint | null>(null);
+  const [series, setSeries] = useState<TimeValue[]>([]);
+  const [activeLayers, setActiveLayers] = useState<Set<LayerId>>(new Set(["rain", "cells"]));
+
+  // ── Derived ──
+  const currentSiteCondition = useMemo(
+    () => conditions.find((c) => c.site_id === activeSite) ?? null,
+    [conditions, activeSite],
+  );
+
+  // Forecast tiles from current site conditions
+  const forecastTiles = useMemo<DayForecast[]>(() => {
+    return buildForecast({ t2m: [], rain: [], wind: [] });
+  }, []);
+
+  // ── Initial loads ──
   useEffect(() => {
     fetchSources().then((d) => {
       setSources(d.sources);
       if (d.sources.length > 0) setSource(d.sources[0].id);
     });
+    fetchSites().then((d) => setSites(d.sites));
+    fetchSiteConditions().then((d) => setConditions(d.conditions));
+    fetchAlerts().then((d) => setAlerts(d.alerts));
   }, []);
 
   useEffect(() => {
@@ -51,15 +82,21 @@ export default function App() {
     });
   }, [source, varId]);
 
-  const loadFrame = useCallback(
-    (src: string, v: string, ts: string) => {
-      fetchFrame(src, v, ts).then((d) => {
-        setPoints(d.points);
-        setLoading(false);
-      });
-    },
-    [],
-  );
+  // ── Refresh mining data periodically ──
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetchSiteConditions().then((d) => setConditions(d.conditions));
+      fetchAlerts().then((d) => setAlerts(d.alerts));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const loadFrame = useCallback((src: string, v: string, ts: string) => {
+    fetchFrame(src, v, ts).then((d) => {
+      setPoints(d.points);
+      setLoading(false);
+    });
+  }, []);
 
   useEffect(() => {
     if (!source || !varId || timestamps.length === 0) return;
@@ -75,78 +112,106 @@ export default function App() {
 
   useEffect(() => {
     if (!playing || timestamps.length === 0) return;
-    const id = setInterval(() => {
-      setTsIdx((i) => (i + 1) % timestamps.length);
-    }, 500);
+    const id = setInterval(() => setTsIdx((i) => (i + 1) % timestamps.length), 500);
     return () => clearInterval(id);
   }, [playing, timestamps]);
 
-  const handlePointClick = useCallback(
-    (lat: number, lon: number) => {
-      setSelPoint({ lat, lon });
-      fetchPointSeries(source, varId, lat, lon).then((d) => {
-        setSeries(d.series);
-      });
-    },
-    [source, varId],
-  );
+  const handlePointClick = useCallback((lat: number, lon: number) => {
+    setSelPoint({ lat, lon });
+    fetchPointSeries(source, varId, lat, lon).then((d) => setSeries(d.series));
+  }, [source, varId]);
+
+  const handleLayerToggle = useCallback((layer: LayerId) => {
+    setActiveLayers((prev) => {
+      const next = new Set(prev);
+      if (next.has(layer)) next.delete(layer);
+      else next.add(layer);
+      return next;
+    });
+  }, []);
 
   const currentVar = variables.find((v) => v.id === varId);
 
   return (
     <div className="h-full flex flex-col bg-slate-900 text-slate-100">
-      <header className="flex items-center gap-3 px-5 py-3 border-b border-slate-700 bg-slate-950 shrink-0">
-        <span className="text-lg font-bold">☀ CUACADX</span>
-        <span className="text-sm text-slate-400">Regional Weather Intelligence</span>
+      {/* ── Header ── */}
+      <header className="flex items-center gap-4 px-5 py-2 border-b border-slate-700 bg-slate-950 shrink-0">
+        <span className="text-lg font-bold tracking-tight text-cyan-400">CUACADX</span>
+        <span className="text-[10px] text-slate-500 uppercase tracking-wider">7‑Day Weather Intelligence</span>
+        <div className="flex-1" />
+        <SiteSelector sites={sites} selected={activeSite} onChange={setActiveSite} />
+        <div className="w-px h-5 bg-slate-700" />
+        <OpsStatusBar conditions={currentSiteCondition} />
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        <ControlPanel
-          sources={sources}
-          source={source}
-          onSourceChange={setSource}
-          variables={variables}
+      {/* ── Main area: map + overlays ── */}
+      <div className="flex-1 relative">
+        <WeatherMap
+          points={points}
+          cells={activeLayers.has("cells") ? cells : []}
           varId={varId}
-          onVarChange={setVarId}
-          timestamps={timestamps}
-          tsIdx={tsIdx}
-          onTsChange={setTsIdx}
-          playing={playing}
-          onPlayToggle={() => setPlaying((p) => !p)}
+          onPointClick={handlePointClick}
+          selectedPoint={selPoint}
+          showSites={activeLayers.has("sites")}
+          sites={sites}
+          activeSite={activeSite}
         />
 
-        <div className="flex-1 relative">
-          <WeatherMap
-            points={points}
-            cells={cells}
-            varId={varId}
-            onPointClick={handlePointClick}
-            selectedPoint={selPoint}
+        {/* Floating overlays */}
+        <div className="absolute top-3 left-3 z-[1000] flex flex-col gap-2">
+          <LayerToggle
+            layers={["rain", "cells", "wind", "sites"]}
+            active={activeLayers}
+            onToggle={handleLayerToggle}
           />
+          <SidebarMetrics conditions={currentSiteCondition} />
+        </div>
+
+        <div className="absolute top-3 right-3 z-[1000]">
           <Legend varId={varId} unit={currentVar?.unit ?? ""} />
-          <InfoBar
+        </div>
+
+        <div className="absolute bottom-3 left-3 z-[1000]">
+          <AlertPanel alerts={alerts} />
+        </div>
+
+        <InfoBar
+          source={source}
+          varLabel={currentVar?.label ?? varId}
+          ts={timestamps[tsIdx] ?? ""}
+          count={points.length}
+          loading={loading}
+        />
+
+        {/* Control panel (collapsed into bottom-right icon) */}
+        <div className="absolute bottom-3 right-3 z-[1000] flex gap-2 items-end">
+          <ControlPanel
+            sources={sources}
             source={source}
-            varLabel={currentVar?.label ?? varId}
-            ts={timestamps[tsIdx] ?? ""}
-            count={points.length}
-            loading={loading}
+            onSourceChange={setSource}
+            variables={variables}
+            varId={varId}
+            onVarChange={setVarId}
+            timestamps={timestamps}
+            tsIdx={tsIdx}
+            onTsChange={setTsIdx}
+            playing={playing}
+            onPlayToggle={() => setPlaying((p) => !p)}
           />
         </div>
       </div>
 
-      {selPoint && (
+      {/* ── Bottom panel ── */}
+      {selPoint && series.length > 0 ? (
         <TimeSeriesChart
           series={series}
           lat={selPoint.lat}
           lon={selPoint.lon}
           varLabel={currentVar?.label ?? varId}
           unit={currentVar?.unit ?? ""}
-          onClose={() => {
-            setSelPoint(null);
-            setSeries([]);
-          }}
+          onClose={() => { setSelPoint(null); setSeries([]); }}
         />
-      )}
+      ) : null}
     </div>
   );
 }

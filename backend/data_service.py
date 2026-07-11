@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from functools import lru_cache
 
@@ -123,8 +124,8 @@ def get_sources() -> list[dict]:
 
     sources.append({
         "id": "fcn",
-        "name": "FourCastNet AI Forecast",
-        "description": "6-168h · 0.25° · real GFS IC + FCN v1 AFNO",
+        "name": "7-Day AI Forecast",
+        "description": "6–168h (7-day) · 0.25° · global AI model",
         "variables": FCN_VARIABLES,
     })
 
@@ -253,7 +254,14 @@ def _load_fcn(var: str) -> pd.DataFrame:
             sub["v"] = sub["value"].apply(transform)
         else:
             sub["v"] = sub["value"]
-        sub["ts"] = "lead " + sub["lead_time_h"].astype(str) + "h"
+
+        # Convert lead hours to actual dates
+        if forecast_dir:
+            base_hour = int(forecast_dir.name)
+            base_date = datetime(int(forecast_dir.parent.name[:4]), int(forecast_dir.parent.name[4:6]), int(forecast_dir.parent.name[6:8]), base_hour, tzinfo=timezone.utc)
+            sub["ts"] = sub["lead_time_h"].apply(lambda h: (base_date + timedelta(hours=h)).strftime("%b %d %H:%M"))
+        else:
+            sub["ts"] = "D" + (sub["lead_time_h"] // 6 + 1).astype(str) + " " + ((sub["lead_time_h"] % 24)).astype(str) + "h"
         FCN_CACHE[v] = sub[["lat", "lon", "v", "ts"]]
 
     return FCN_CACHE.get(var, pd.DataFrame())

@@ -71,7 +71,6 @@ export default function TimeSeriesChart({
           <XAxis
             dataKey="ts"
             tick={{ fontSize: 10, fill: "#94a3b8" }}
-            tickFormatter={(v: string) => v.slice(5, 16)}
             interval="preserveStartEnd"
           />
           <YAxis
